@@ -6,6 +6,8 @@ A classroom projector game for Mr. Fung's class. Teams race to call out a word f
 
 Open that link, then full-screen the browser on the projector, a Chromebook, or an iPad. There is no account, no install, and no student names. Teams are colours only: Red, Blue, Green, Yellow, Purple, and Orange. Setup choices stay in this browser (`localStorage`).
 
+The site is the files on the `main` branch, folder `/` (root). If the link is not up yet, open the repository's **Settings → Pages**, choose **Deploy from a branch**, branch **main**, folder **/ (root)**, and Save. GitHub builds the game from there.
+
 ## How a round works
 
 1. Pick 2–6 teams, a shortest word (2, 3, or 4 letters; 3 is the usual), and auto or manual flips.

@@ -52,7 +52,6 @@
     table: [],
     teams: [],
     selected: [],
-    word: "",
     message: null,
     splash: null,
     shake: false,
@@ -563,18 +562,6 @@
     return pattern;
   }
 
-  function lettersOnly(text) {
-    return String(text || "").toUpperCase().replace(/[^A-Z]/g, "");
-  }
-
-  function typedMatchesPattern(typed, pattern) {
-    if (!typed || typed.length !== pattern.length) return false;
-    for (var i = 0; i < pattern.length; i++) {
-      if (pattern.charAt(i) !== "?" && pattern.charAt(i) !== typed.charAt(i)) return false;
-    }
-    return true;
-  }
-
   function resolvePattern(pattern) {
     var lower = pattern.toLowerCase();
     if (lower.indexOf("?") < 0) return wordSet.has(lower) ? lower : "";
@@ -625,7 +612,6 @@
       table: state.table,
       teams: teams,
       selected: state.selected.slice(),
-      word: state.word,
       phase: state.phase
     }));
     if (state.history.length > 60) state.history.shift();
@@ -636,7 +622,6 @@
     state.deck = data.deck;
     state.table = data.table;
     state.selected = data.selected;
-    state.word = data.word;
     state.phase = data.phase;
     state.teams = data.teams.map(function (t) {
       var def = teamDef(t.id);
@@ -761,7 +746,6 @@
     state.deck = shuffle(buildDeck());
     state.table = [];
     state.selected = [];
-    state.word = "";
     state.message = null;
     state.splash = null;
     state.shake = false;
@@ -861,14 +845,8 @@
       return;
     }
     var pattern = cardPattern(cards);
-    var typed = lettersOnly(state.word);
-    if (state.word.trim() && !typedMatchesPattern(typed, pattern)) {
-      state.shake = true;
-      setMessage("warn", "The typed word doesn't match those letters.");
-      return;
-    }
     if (!spellOn()) {
-      commitAward(teamId, typed, false);
+      commitAward(teamId, "", false);
       return;
     }
     if (!wordSet) {
@@ -878,17 +856,17 @@
         award(teamId);
       }).catch(function () {
         state.checking = false;
-        rejectSpell(teamId, cards, typed || pattern);
+        rejectSpell(teamId, cards, pattern);
         setMessage("warn", "The word list didn't load. Allow anyway if you are sure.");
       });
       return;
     }
-    var resolved = typed || resolvePattern(pattern);
+    var resolved = resolvePattern(pattern);
     if (resolved && wordSet.has(resolved.toLowerCase())) {
       commitAward(teamId, resolved.toUpperCase(), true);
       return;
     }
-    rejectSpell(teamId, cards, (typed || pattern).toUpperCase());
+    rejectSpell(teamId, cards, pattern.toUpperCase());
   }
 
   function rejectSpell(teamId, cards, display) {
@@ -900,7 +878,6 @@
     state.override = { cardIds: ids, teamId: teamId, word: display };
     state.reject = { word: display };
     state.selected = [];
-    state.word = "";
     state.shake = false;
     playBuzz();
     clearRejectTimer();
@@ -933,7 +910,6 @@
       cards.push(card);
     }
     state.selected = cards.map(function (c) { return c.id; });
-    state.word = "";
     var teamId = pending.teamId;
     var shown = pending.word;
     clearOverride();
@@ -953,7 +929,6 @@
     state.table = state.table.filter(function (c) { return !ids[c.id]; });
     team.cards = team.cards.concat(cards);
     state.selected = [];
-    state.word = "";
     state.shake = false;
     clearOverride();
     rememberMessage("good", team.name + " takes " + cards.length + (cards.length === 1 ? " card." : " cards."));
@@ -1251,8 +1226,6 @@
   }
 
   function render() {
-    var focusWord = document.activeElement && document.activeElement.getAttribute("data-role") === "word";
-    var caret = focusWord ? document.activeElement.selectionStart : null;
     freshIds = [];
     document.body.classList.toggle("is-play", state.phase === "play");
     if (state.phase === "setup") app.innerHTML = renderSetup();
@@ -1263,16 +1236,6 @@
     var dealing = freshIds.slice();
     freshIds = [];
     dealing.forEach(primeDeal);
-    if (focusWord) {
-      var input = app.querySelector("[data-role='word']");
-      if (input) {
-        input.focus();
-        if (caret !== null) {
-          var pos = Math.min(caret, input.value.length);
-          input.setSelectionRange(pos, pos);
-        }
-      }
-    }
     updateCountdown();
     syncMusic();
   }
@@ -1458,7 +1421,6 @@
         "</button>"
       );
     }).join("");
-    var wordValue = esc(state.word);
     return (
       '<section class="play' + (state.paused ? " is-paused" : "") + (state.penalty ? " is-penalty" : "") +
         '" data-testid="play" style="--team-n:' + state.teams.length + '">' +
@@ -1489,12 +1451,6 @@
         "</div>" +
         '<footer class="dock">' +
           '<div class="dock-main">' +
-            '<label class="word-label">Word' +
-              '<input data-role="word" data-testid="word-input" maxlength="16" autocomplete="off" ' +
-                'autocorrect="off" autocapitalize="characters" spellcheck="false" ' +
-                'placeholder="Optional" value="' + wordValue + '"' +
-                (state.penalty || state.busy ? " disabled" : "") + ">" +
-            "</label>" +
             '<p class="status' + (status.tone ? " tone-" + status.tone : "") +
               '" data-status data-testid="status">' + esc(status.text) + "</p>" +
             '<div class="dock-tools">' +
@@ -1711,10 +1667,6 @@
 
   function onInput(event) {
     var target = event.target;
-    if (target.getAttribute("data-role") === "word") {
-      state.word = target.value;
-      return;
-    }
     if (target.getAttribute("data-action") === "set-speed") {
       state.settings.flipSeconds = clampInt(target.value, 2, 10, 5);
       saveSettings();
@@ -1751,12 +1703,6 @@
       if (state.phase !== "play") return;
       event.preventDefault();
       flipCard();
-    }
-    if (event.key === "Enter" && document.activeElement && document.activeElement.getAttribute("data-role") === "word") {
-      event.preventDefault();
-      if (state.selected.length) {
-        setMessage("info", "Now tap the team that called it.");
-      }
     }
   }
 

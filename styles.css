@@ -985,33 +985,9 @@ button:disabled {
 
 .dock-main {
   display: grid;
-  grid-template-columns: minmax(190px, 280px) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-}
-
-.word-label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.8rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.word-label input {
-  min-height: 52px;
-  border-radius: 12px;
-  border: 3px solid var(--ink);
-  background: #fff;
-  padding: 0 12px;
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink);
 }
 
 .status {

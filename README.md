@@ -12,10 +12,10 @@ The site is the files on the `main` branch, folder `/` (root). If the link is no
 
 1. Pick 2–6 teams, a shortest word (2, 3, or 4 letters; 3 is the usual), and auto or manual flips.
 2. Letter cards turn face up one at a time. Auto mode waits 2–10 seconds. Manual mode uses **Next letter** or the space bar.
-3. A team calls a word. Tap the letters (they show the order you tapped), optionally type the word so the class can see it, then tap that team's colour.
+3. A team calls a word. Tap the letters (they show the order you tapped), then tap that team's colour.
 4. Spell check is on unless you turn it off in Setup. The letters, in tap order, have to spell a real word. TH, ER, IN, and QU each add both letters. `?` can be any letter. A green check means the word is in the list, and that word flashes for the class. If it is not a word, the cards stay on the table and a red "Not a word" message shows. **Allow anyway** gives the cards to that team if you know the list missed one.
 5. Those cards fly to the team's pile. The score is the number of cards.
-6. TH, ER, IN, and QU count as two letters. `?` is any letter and counts as one. The word must reach the shortest length. If you type a word, it has to match the letters you tapped.
+6. TH, ER, IN, and QU count as two letters. `?` is any letter and counts as one. The word must reach the shortest length.
 7. **Not a word** (the penalty button): tap the team that guessed wrong. Every other team takes one card from the table, or from the deck if the table has run out.
 8. **Undo** takes back the last move, including an award and Allow anyway. **Pause** stops new letters and the music. **End round** counts the cards at any time. A short tune plays during the round (Music on/off and the volume stay in this browser). It gets quieter while letters are being chosen, and a fanfare plays for the winner. A soft buzz plays on a rejected word when music is on.
 9. When the deck is empty, finish any word that is still long enough. The round ends on its own once there are not enough letters left. **Play again** shuffles a new deck.

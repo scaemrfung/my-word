@@ -35,7 +35,10 @@
   var endTimer = null;
   var messageTimer = null;
   var splashTimer = null;
+  var rejectTimer = null;
   var flipDue = 0;
+  var wordSet = null;
+  var wordLoad = null;
 
   var state = {
     settings: loadSettings(),
@@ -54,7 +57,10 @@
     splash: null,
     shake: false,
     history: [],
-    confetti: []
+    confetti: [],
+    override: null,
+    reject: null,
+    checking: false
   };
 
   function clampInt(value, min, max, fallback) {
@@ -83,7 +89,8 @@
         flipMode: raw.flipMode === "manual" ? "manual" : "auto",
         flipSeconds: clampInt(raw.flipSeconds, 2, 10, fallback.flipSeconds),
         musicOn: raw.musicOn === false ? false : true,
-        musicVolume: clampVolume(raw.musicVolume == null ? fallback.musicVolume : raw.musicVolume)
+        musicVolume: clampVolume(raw.musicVolume == null ? fallback.musicVolume : raw.musicVolume),
+        spellCheck: raw.spellCheck === false ? false : true
       };
     } catch (err) {
       return fallback;
@@ -99,7 +106,8 @@
         flipMode: s.flipMode,
         flipSeconds: s.flipSeconds,
         musicOn: s.musicOn !== false,
-        musicVolume: clampVolume(s.musicVolume)
+        musicVolume: clampVolume(s.musicVolume),
+        spellCheck: s.spellCheck !== false
       }));
     } catch (err) {
       /* Private mode and blocked storage still let the round run. */
@@ -331,6 +339,37 @@
     playHat(t + 0.72, 0.35, 0.06);
   }
 
+  function playBuzz() {
+    if (!musicWanted() || state.paused) return;
+    if (!ensureAudio()) return;
+    var blip = function () {
+      if (!audioCtx || audioCtx.state !== "running") return;
+      var t = audioCtx.currentTime + 0.02;
+      buzzAt(220, t, 0.13, 0.11);
+      buzzAt(165, t + 0.15, 0.18, 0.09);
+    };
+    if (audioCtx.state === "suspended") {
+      var pending = audioCtx.resume();
+      if (pending && pending.then) pending.then(blip).catch(function () {});
+    } else {
+      blip();
+    }
+  }
+
+  function buzzAt(freq, time, dur, peak) {
+    var osc = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, time);
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(peak, time + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    osc.connect(gain);
+    gain.connect(musicMaster);
+    osc.start(time);
+    osc.stop(time + dur + 0.03);
+  }
+
   function wakeAudio() {
     if (!musicWanted()) return;
     if (state.phase !== "play" && state.phase !== "winner") return;
@@ -490,6 +529,88 @@
     return n;
   }
 
+  function spellOn() {
+    return state.settings.spellCheck !== false;
+  }
+
+  function loadWordList() {
+    if (wordSet) return Promise.resolve(wordSet);
+    if (wordLoad) return wordLoad;
+    wordLoad = fetch("words.txt").then(function (res) {
+      if (!res.ok) throw new Error("word list");
+      return res.text();
+    }).then(function (text) {
+      var set = new Set();
+      var lines = text.split("\n");
+      for (var i = 0; i < lines.length; i++) {
+        var w = lines[i].trim();
+        if (/^[a-z]{2,}$/.test(w)) set.add(w);
+      }
+      wordSet = set;
+      return set;
+    }).catch(function (err) {
+      wordLoad = null;
+      throw err;
+    });
+    return wordLoad;
+  }
+
+  function cardPattern(cards) {
+    var pattern = "";
+    for (var i = 0; i < cards.length; i++) {
+      pattern += cards[i].kind === "wild" ? "?" : cards[i].face.toUpperCase();
+    }
+    return pattern;
+  }
+
+  function lettersOnly(text) {
+    return String(text || "").toUpperCase().replace(/[^A-Z]/g, "");
+  }
+
+  function typedMatchesPattern(typed, pattern) {
+    if (!typed || typed.length !== pattern.length) return false;
+    for (var i = 0; i < pattern.length; i++) {
+      if (pattern.charAt(i) !== "?" && pattern.charAt(i) !== typed.charAt(i)) return false;
+    }
+    return true;
+  }
+
+  function resolvePattern(pattern) {
+    var lower = pattern.toLowerCase();
+    if (lower.indexOf("?") < 0) return wordSet.has(lower) ? lower : "";
+    var idxs = [];
+    var chars = lower.split("");
+    for (var i = 0; i < chars.length; i++) {
+      if (chars[i] === "?") idxs.push(i);
+    }
+    var alpha = "abcdefghijklmnopqrstuvwxyz";
+    function walk(n) {
+      if (n === idxs.length) {
+        var w = chars.join("");
+        return wordSet.has(w) ? w : "";
+      }
+      var pos = idxs[n];
+      for (var k = 0; k < alpha.length; k++) {
+        chars[pos] = alpha.charAt(k);
+        var found = walk(n + 1);
+        if (found) return found;
+      }
+      return "";
+    }
+    return walk(0);
+  }
+
+  function clearOverride() {
+    state.override = null;
+    state.reject = null;
+    clearRejectTimer();
+  }
+
+  function clearRejectTimer() {
+    if (rejectTimer) window.clearTimeout(rejectTimer);
+    rejectTimer = null;
+  }
+
   function tableLetters() {
     return letterCount(state.table);
   }
@@ -533,6 +654,8 @@
     state.splash = null;
     state.shake = false;
     state.paused = false;
+    state.checking = false;
+    clearOverride();
   }
 
   function clearFlipTimer() {
@@ -643,6 +766,8 @@
     state.splash = null;
     state.shake = false;
     state.history = [];
+    state.checking = false;
+    clearOverride();
     state.penalty = false;
     state.howTo = false;
     state.confirmEnd = false;
@@ -695,6 +820,7 @@
     else state.selected.push(id);
     state.shake = false;
     if (state.message && state.message.tone === "warn") state.message = null;
+    clearOverride();
     render();
   }
 
@@ -703,11 +829,12 @@
     state.selected = [];
     state.shake = false;
     if (state.message && state.message.tone === "warn") state.message = null;
+    clearOverride();
     render();
   }
 
   function award(teamId) {
-    if (state.busy || state.splash || state.phase !== "play" || state.howTo || state.confirmEnd) return;
+    if (state.busy || state.splash || state.checking || state.phase !== "play" || state.howTo || state.confirmEnd) return;
     if (state.penalty) {
       resolvePenalty(teamId);
       return;
@@ -716,6 +843,7 @@
     var team = findTeam(teamId);
     if (!team) return;
     if (!cards.length) {
+      if (state.override) return;
       setMessage("warn", "Tap the letters in the word first.");
       return;
     }
@@ -732,7 +860,92 @@
       setMessage("warn", "Need " + min + " letters. You have " + letters + "." + extra);
       return;
     }
-    var typed = state.word.trim().replace(/\s+/g, " ").slice(0, 16);
+    var pattern = cardPattern(cards);
+    var typed = lettersOnly(state.word);
+    if (state.word.trim() && !typedMatchesPattern(typed, pattern)) {
+      state.shake = true;
+      setMessage("warn", "The typed word doesn't match those letters.");
+      return;
+    }
+    if (!spellOn()) {
+      commitAward(teamId, typed, false);
+      return;
+    }
+    if (!wordSet) {
+      state.checking = true;
+      loadWordList().then(function () {
+        state.checking = false;
+        award(teamId);
+      }).catch(function () {
+        state.checking = false;
+        rejectSpell(teamId, cards, typed || pattern);
+        setMessage("warn", "The word list didn't load. Allow anyway if you are sure.");
+      });
+      return;
+    }
+    var resolved = typed || resolvePattern(pattern);
+    if (resolved && wordSet.has(resolved.toLowerCase())) {
+      commitAward(teamId, resolved.toUpperCase(), true);
+      return;
+    }
+    rejectSpell(teamId, cards, (typed || pattern).toUpperCase());
+  }
+
+  function rejectSpell(teamId, cards, display) {
+    var ids = [];
+    for (var i = 0; i < cards.length; i++) {
+      if (findOnTable(cards[i].id)) ids.push(cards[i].id);
+    }
+    if (!ids.length) return;
+    state.override = { cardIds: ids, teamId: teamId, word: display };
+    state.reject = { word: display };
+    state.selected = [];
+    state.word = "";
+    state.shake = false;
+    playBuzz();
+    clearRejectTimer();
+    rejectTimer = window.setTimeout(function () {
+      state.reject = null;
+      if (state.phase === "play") render();
+    }, 4500);
+    render();
+    announce("Not a word. " + display);
+  }
+
+  function findOnTable(id) {
+    for (var i = 0; i < state.table.length; i++) {
+      if (state.table[i].id === id) return state.table[i];
+    }
+    return null;
+  }
+
+  function allowAnyway() {
+    var pending = state.override;
+    if (!pending || state.busy || state.splash || state.phase !== "play" || state.penalty) return;
+    var cards = [];
+    for (var i = 0; i < pending.cardIds.length; i++) {
+      var card = findOnTable(pending.cardIds[i]);
+      if (!card) {
+        clearOverride();
+        setMessage("warn", "Those cards are not all on the table anymore.");
+        return;
+      }
+      cards.push(card);
+    }
+    state.selected = cards.map(function (c) { return c.id; });
+    state.word = "";
+    var teamId = pending.teamId;
+    var shown = pending.word;
+    clearOverride();
+    commitAward(teamId, shown, false);
+  }
+
+  function commitAward(teamId, displayWord, checked) {
+    if (state.busy || state.splash || state.phase !== "play" || state.howTo || state.confirmEnd) return;
+    var cards = selectedCards();
+    var team = findTeam(teamId);
+    if (!team || !cards.length) return;
+    var shown = displayWord ? String(displayWord).toUpperCase() : "";
     var specs = captureSpecs(cards, teamId);
     pushHistory();
     var ids = {};
@@ -742,14 +955,15 @@
     state.selected = [];
     state.word = "";
     state.shake = false;
+    clearOverride();
     rememberMessage("good", team.name + " takes " + cards.length + (cards.length === 1 ? " card." : " cards."));
-    state.splash = typed ? { word: typed.toUpperCase(), teamId: teamId } : null;
+    state.splash = shown ? { word: shown, teamId: teamId, check: !!checked } : null;
     state.busy = true;
     clearFlipTimer();
     clearEndTimer();
     var flyers = spawnFlyers(specs);
     render();
-    announce(state.message.text + (typed ? " Word " + typed : ""));
+    announce(state.message.text + (shown ? " Word " + shown : ""));
     animateFlyers(flyers).then(function () {
       state.busy = false;
       if (state.splash) {
@@ -1012,6 +1226,12 @@
 
   function statusModel() {
     if (state.message) return state.message;
+    if (state.override && !state.selected.length && !state.penalty) {
+      return {
+        tone: "warn",
+        text: state.override.word + " is not in the word list. Allow anyway if you are sure."
+      };
+    }
     var cards = selectedCards();
     var letters = letterCount(cards);
     var min = state.settings.minLength;
@@ -1113,6 +1333,13 @@
             "</div>" +
             speed +
           "</div>" +
+          "<div>" +
+            '<p class="field-label">Spell check</p>' +
+            '<div class="seg-row">' +
+              '<button type="button" class="seg" data-action="set-spell" data-value="on" data-testid="spell-on" aria-pressed="' + (spellOn() ? "true" : "false") + '">On<small>real words</small></button>' +
+              '<button type="button" class="seg" data-action="set-spell" data-value="off" data-testid="spell-off" aria-pressed="' + (spellOn() ? "false" : "true") + '">Off<small>you decide</small></button>' +
+            "</div>" +
+          "</div>" +
           '<button type="button" class="start" data-action="start" data-testid="start-game">Start the game</button>' +
           '<button type="button" class="linkish" data-action="how-to" data-testid="how-to">How to play</button>' +
         "</div>" +
@@ -1205,6 +1432,17 @@
           ";--splash:" + splashTeam.splash + '">' +
           '<p class="splash-kicker">' + esc(splashTeam.name) + "</p>" +
           '<p class="splash-word' + lenClass + '">' + esc(state.splash.word) + "</p>" +
+          (state.splash.check ? '<p class="splash-check" data-testid="spell-ok">✓</p>' : "") +
+        "</div>";
+    }
+    var reject = "";
+    if (state.reject) {
+      var rejectLen = state.reject.word.length > 10 ? " len-long" : (state.reject.word.length > 6 ? " len-mid" : "");
+      reject =
+        '<div class="reject" data-testid="reject" role="alert">' +
+          '<p class="reject-title">Not a word</p>' +
+          '<p class="reject-word' + rejectLen + '">' + esc(state.reject.word) + "</p>" +
+          '<button type="button" class="allow-btn" data-action="allow-anyway" data-testid="allow-anyway">Allow anyway</button>' +
         "</div>";
     }
     var status = statusModel();
@@ -1246,6 +1484,7 @@
             banner +
             '<div class="cards" data-testid="table">' + cardsHtml + "</div>" +
             splash +
+            reject +
           "</div>" +
         "</div>" +
         '<footer class="dock">' +
@@ -1264,6 +1503,9 @@
                 ">Not a word</button>" +
               '<button type="button" class="btn-quiet" data-action="clear-selection"' +
                 (state.selected.length ? "" : " disabled") + ">Clear</button>" +
+              (state.override
+                ? '<button type="button" class="btn-quiet allow-dock" data-action="allow-anyway" data-testid="allow-anyway-dock">Allow anyway</button>'
+                : "") +
             "</div>" +
           "</div>" +
           '<div class="team-actions' + (ready ? " is-ready" : "") + '">' + awards + "</div>" +
@@ -1284,8 +1526,10 @@
             "<li>The teacher taps those letters, then taps your colour.</li>" +
             "<li>The cards go on your pile. Most cards wins.</li>" +
             "<li>TH, ER, IN, and QU count as two letters. ? can be any letter.</li>" +
-            "<li>The word has to be long enough.</li>" +
-            "<li>Not a real word? Every other team takes one card.</li>" +
+            "<li>The word has to be long enough, and it has to be a real word. A green check means yes.</li>" +
+            "<li>If those letters are not in the list, the cards stay. The teacher can tap Allow anyway.</li>" +
+            "<li>Spell check can be turned off before the round.</li>" +
+            "<li>For a penalty, tap Not a word. Every other team takes one card.</li>" +
           "</ol>" +
           "<p>Space bar flips the next letter. Undo takes back the last move. Music plays during the round.</p>" +
           '<div class="modal-actions">' +
@@ -1383,6 +1627,11 @@
       state.settings.flipMode = value === "manual" ? "manual" : "auto";
       saveSettings();
       render();
+    } else if (action === "set-spell") {
+      state.settings.spellCheck = value !== "off";
+      saveSettings();
+      if (spellOn()) loadWordList().catch(function () {});
+      render();
     } else if (action === "music-toggle") {
       state.settings.musicOn = !musicWanted();
       saveSettings();
@@ -1419,9 +1668,12 @@
       state.penalty = true;
       state.selected = [];
       state.shake = false;
+      clearOverride();
       clearFlipTimer();
       render();
       announce("Tap the team that guessed wrong.");
+    } else if (action === "allow-anyway") {
+      allowAnyway();
     } else if (action === "cancel-penalty") {
       state.penalty = false;
       render();
@@ -1578,9 +1830,14 @@
           volume: state.settings.musicVolume,
           on: musicWanted()
         };
-      }
+      },
+      wordsReady: function () { return !!(wordSet && wordSet.size); },
+      hasWord: function (w) { return !!(wordSet && wordSet.has(String(w).toLowerCase())); },
+      wordCount: function () { return wordSet ? wordSet.size : 0; }
     };
   }
+
+  if (spellOn()) loadWordList().catch(function () {});
 
   render();
 })();

@@ -16,7 +16,7 @@ The site is the files on the `main` branch, folder `/` (root). If the link is no
 4. Those cards fly to the team's pile. The score is the number of cards.
 5. TH, ER, IN, and QU count as two letters. `?` is any letter and counts as one. The word must reach the shortest length.
 6. **Not a word:** tap the team that guessed wrong. Every other team takes one card from the table, or from the deck if the table has run out.
-7. **Undo** takes back the last move. **Pause** stops new letters. **End round** counts the cards at any time.
+7. **Undo** takes back the last move. **Pause** stops new letters and the music. **End round** counts the cards at any time. A short tune plays during the round (Music on/off and the volume stay in this browser). It gets quieter while letters are being chosen, and a fanfare plays for the winner.
 8. When the deck is empty, finish any word that is still long enough. The round ends on its own once there are not enough letters left. **Play again** shuffles a new deck.
 
 The deck has 55 cards, weighted toward common English letters, including the two-letter cards and two wild cards. It is shuffled every game.

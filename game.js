@@ -65,15 +65,25 @@
     return n;
   }
 
+  function clampVolume(value) {
+    var n = Number(value);
+    if (!isFinite(n)) return 0.55;
+    if (n < 0) return 0;
+    if (n > 1) return 1;
+    return Math.round(n * 100) / 100;
+  }
+
   function loadSettings() {
-    var fallback = { teamCount: 4, minLength: 3, flipMode: "auto", flipSeconds: 5 };
+    var fallback = { teamCount: 4, minLength: 3, flipMode: "auto", flipSeconds: 5, musicOn: true, musicVolume: 0.55 };
     try {
       var raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
       return {
         teamCount: clampInt(raw.teamCount, 2, 6, fallback.teamCount),
         minLength: raw.minLength === 2 || raw.minLength === 4 ? raw.minLength : 3,
         flipMode: raw.flipMode === "manual" ? "manual" : "auto",
-        flipSeconds: clampInt(raw.flipSeconds, 2, 10, fallback.flipSeconds)
+        flipSeconds: clampInt(raw.flipSeconds, 2, 10, fallback.flipSeconds),
+        musicOn: raw.musicOn === false ? false : true,
+        musicVolume: clampVolume(raw.musicVolume == null ? fallback.musicVolume : raw.musicVolume)
       };
     } catch (err) {
       return fallback;
@@ -87,11 +97,311 @@
         teamCount: s.teamCount,
         minLength: s.minLength,
         flipMode: s.flipMode,
-        flipSeconds: s.flipSeconds
+        flipSeconds: s.flipSeconds,
+        musicOn: s.musicOn !== false,
+        musicVolume: clampVolume(s.musicVolume)
       }));
     } catch (err) {
       /* Private mode and blocked storage still let the round run. */
     }
+  }
+
+  /* In-browser tune. No files. A pentatonic loop, bass, and soft drums. */
+  var audioCtx = null;
+  var musicMaster = null;
+  var musicDuck = null;
+  var musicTimer = null;
+  var musicNoise = null;
+  var musicNext = 0;
+  var musicStep = 0;
+  var musicLooping = false;
+  var musicNodes = [];
+  var fanfareStarted = false;
+  var fanfarePending = false;
+  var EIGHTH = 0.3;
+
+  var PITCH = {
+    D2: 73.42, E2: 82.41, G2: 98.0, A2: 110.0, B2: 123.47,
+    C3: 130.81, D3: 146.83, E3: 164.81, G3: 196.0, A3: 220.0, B3: 246.94,
+    C4: 261.63, D4: 293.66, E4: 329.63, G4: 392.0, A4: 440.0, B4: 493.88,
+    C5: 523.25, D5: 587.33, E5: 659.25, G5: 783.99
+  };
+
+  /* 8 bars, 8 eighth notes. Rests keep the loop from chattering. */
+  var MELODY = [
+    "G4", "", "B4", "", "D5", "", "B4", "",
+    "A4", "", "G4", "", "E4", "", "", "",
+    "G4", "", "A4", "", "B4", "G4", "", "E4",
+    "D4", "", "E4", "", "D4", "", "", "",
+    "B4", "", "D5", "", "B4", "", "A4", "",
+    "G4", "", "A4", "", "B4", "", "", "",
+    "D5", "", "B4", "", "A4", "", "G4", "",
+    "E4", "", "D4", "", "G4", "", "", ""
+  ];
+  var BASS_A = ["G2", "E2", "C3", "D3", "G2", "E2", "C3", "D3"];
+  var BASS_B = ["D3", "B2", "G3", "A3", "D3", "B2", "G3", "A3"];
+
+  function musicWanted() {
+    return state.settings.musicOn !== false;
+  }
+
+  function ensureAudio() {
+    if (audioCtx) return true;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    try {
+      audioCtx = new AC();
+    } catch (err) {
+      return false;
+    }
+    musicMaster = audioCtx.createGain();
+    musicDuck = audioCtx.createGain();
+    musicDuck.gain.value = 1;
+    musicMaster.connect(musicDuck);
+    musicDuck.connect(audioCtx.destination);
+    applyMusicVolume();
+    return true;
+  }
+
+  function trackNode(node) {
+    musicNodes.push(node);
+    node.onended = function () {
+      var i = musicNodes.indexOf(node);
+      if (i >= 0) musicNodes.splice(i, 1);
+    };
+  }
+
+  function silenceMusic() {
+    if (!audioCtx) return;
+    var now = audioCtx.currentTime;
+    musicNodes.forEach(function (node) {
+      try { node.stop(now); } catch (err) { /* already stopped */ }
+    });
+    musicNodes = [];
+  }
+
+  function stopMusicLoop() {
+    musicLooping = false;
+    if (musicTimer) window.clearInterval(musicTimer);
+    musicTimer = null;
+  }
+
+  function applyMusicVolume() {
+    if (!musicMaster || !audioCtx) return;
+    var level = musicWanted() ? clampVolume(state.settings.musicVolume) : 0;
+    musicMaster.gain.cancelScheduledValues(audioCtx.currentTime);
+    musicMaster.gain.setTargetAtTime(Math.max(level, 0.0001), audioCtx.currentTime, 0.04);
+    if (level === 0) {
+      musicMaster.gain.setValueAtTime(0, audioCtx.currentTime + 0.12);
+    }
+  }
+
+  function musicShouldDuck() {
+    return state.phase === "play" && (
+      state.selected.length > 0 || state.busy || state.penalty || !!state.splash
+    );
+  }
+
+  function syncDuck() {
+    if (!musicDuck || !audioCtx) return;
+    var target = musicShouldDuck() ? 0.32 : 1;
+    musicDuck.gain.cancelScheduledValues(audioCtx.currentTime);
+    musicDuck.gain.setTargetAtTime(target, audioCtx.currentTime, 0.06);
+  }
+
+  function playTone(freq, time, dur, type, peak) {
+    if (!freq || freq < 1) return;
+    var osc = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, time);
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), time + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    osc.connect(gain);
+    gain.connect(musicMaster);
+    osc.start(time);
+    osc.stop(time + dur + 0.03);
+    trackNode(osc);
+  }
+
+  function noiseBuffer() {
+    if (musicNoise) return musicNoise;
+    var length = Math.floor(audioCtx.sampleRate * 0.25);
+    musicNoise = audioCtx.createBuffer(1, length, audioCtx.sampleRate);
+    var data = musicNoise.getChannelData(0);
+    for (var i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+    return musicNoise;
+  }
+
+  function playHat(time, dur, peak) {
+    var src = audioCtx.createBufferSource();
+    var filter = audioCtx.createBiquadFilter();
+    var gain = audioCtx.createGain();
+    src.buffer = noiseBuffer();
+    filter.type = "highpass";
+    filter.frequency.setValueAtTime(6500, time);
+    gain.gain.setValueAtTime(Math.max(peak, 0.0002), time);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(musicMaster);
+    src.start(time);
+    src.stop(time + dur + 0.02);
+    trackNode(src);
+  }
+
+  function playKick(time) {
+    var osc = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(160, time);
+    osc.frequency.exponentialRampToValueAtTime(52, time + 0.12);
+    gain.gain.setValueAtTime(0.34, time);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.18);
+    osc.connect(gain);
+    gain.connect(musicMaster);
+    osc.start(time);
+    osc.stop(time + 0.2);
+    trackNode(osc);
+  }
+
+  function playMusicStep(index, time) {
+    var beat = index % 8;
+    var bar = Math.floor(index / 8) % 8;
+    var note = MELODY[index % MELODY.length];
+    if (note) playTone(PITCH[note], time, beat % 2 === 0 ? 0.42 : 0.28, "triangle", 0.16);
+    if (beat === 0) playTone(PITCH[BASS_A[bar]], time, 0.46, "sine", 0.2);
+    if (beat === 4) playTone(PITCH[BASS_B[bar]], time, 0.34, "sine", 0.14);
+    if (beat === 0) playKick(time);
+    if (beat === 4) playHat(time, 0.12, 0.05);
+    if (beat % 2 === 0) playHat(time, 0.05, 0.025);
+  }
+
+  function pumpMusic() {
+    if (!musicLooping || !audioCtx) return;
+    var horizon = audioCtx.currentTime + 0.22;
+    while (musicNext < horizon) {
+      playMusicStep(musicStep, musicNext);
+      musicStep = (musicStep + 1) % MELODY.length;
+      musicNext += EIGHTH;
+    }
+  }
+
+  function startMusicLoop() {
+    if (!audioCtx || !musicWanted() || state.phase !== "play" || state.paused) return;
+    if (musicLooping) return;
+    musicLooping = true;
+    musicStep = 0;
+    musicNext = audioCtx.currentTime + 0.08;
+    pumpMusic();
+    musicTimer = window.setInterval(pumpMusic, 60);
+  }
+
+  function playFanfare() {
+    if (!ensureAudio() || !musicWanted()) return;
+    if (fanfareStarted) return;
+    if (audioCtx.state !== "running") {
+      fanfarePending = true;
+      var pending = audioCtx.resume();
+      if (pending && pending.then) {
+        pending.then(function () {
+          if (fanfarePending && state.phase === "winner" && audioCtx.state === "running") {
+            fanfarePending = false;
+            playFanfare();
+          }
+        }).catch(function () { /* iPad waits for the next tap */ });
+      }
+      return;
+    }
+    fanfareStarted = true;
+    fanfarePending = false;
+    stopMusicLoop();
+    silenceMusic();
+    syncDuck();
+    var t = audioCtx.currentTime + 0.06;
+    var rising = ["C4", "E4", "G4", "C5", "E5", "G5"];
+    for (var i = 0; i < rising.length; i++) {
+      playTone(PITCH[rising[i]], t + i * 0.11, 0.34, "triangle", 0.15);
+    }
+    playTone(PITCH.C4, t + 0.72, 1.15, "sine", 0.12);
+    playTone(PITCH.E4, t + 0.72, 1.15, "sine", 0.1);
+    playTone(PITCH.G4, t + 0.72, 1.15, "sine", 0.1);
+    playTone(PITCH.C5, t + 0.72, 1.35, "triangle", 0.16);
+    playHat(t + 0.72, 0.35, 0.06);
+  }
+
+  function wakeAudio() {
+    if (!musicWanted()) return;
+    if (state.phase !== "play" && state.phase !== "winner") return;
+    if (state.phase === "play" && state.paused) return;
+    if (!ensureAudio()) return;
+    if (audioCtx.state === "suspended") {
+      var pending = audioCtx.resume();
+      if (pending && pending.then) {
+        pending.then(function () {
+          if (fanfarePending) playFanfare();
+        }).catch(function () {});
+      }
+    } else if (fanfarePending) {
+      playFanfare();
+    }
+  }
+
+  function syncMusic() {
+    if (!audioCtx) return;
+    applyMusicVolume();
+    syncDuck();
+    if (!musicWanted() || state.phase === "setup") {
+      stopMusicLoop();
+      silenceMusic();
+      fanfarePending = false;
+      return;
+    }
+    if (state.phase === "winner") {
+      stopMusicLoop();
+      if (!fanfareStarted) silenceMusic();
+      return;
+    }
+    if (fanfareStarted) {
+      silenceMusic();
+      fanfareStarted = false;
+      fanfarePending = false;
+      stopMusicLoop();
+    }
+    if (state.paused) {
+      if (audioCtx.state === "running") {
+        var held = audioCtx.suspend();
+        if (held && held.catch) held.catch(function () {});
+      }
+      return;
+    }
+    if (audioCtx.state === "suspended") {
+      var pending = audioCtx.resume();
+      if (pending && pending.catch) pending.catch(function () {});
+    }
+    startMusicLoop();
+  }
+
+  function beginRoundMusic() {
+    fanfareStarted = false;
+    fanfarePending = false;
+    if (!musicWanted()) {
+      if (audioCtx) {
+        stopMusicLoop();
+        silenceMusic();
+        applyMusicVolume();
+      }
+      return;
+    }
+    if (!ensureAudio()) return;
+    silenceMusic();
+    stopMusicLoop();
+    if (!state.paused && audioCtx.state === "suspended") {
+      var pending = audioCtx.resume();
+      if (pending && pending.catch) pending.catch(function () {});
+    }
+    syncMusic();
   }
 
   function esc(value) {
@@ -343,6 +653,7 @@
     render();
     announce("New round. " + state.teams.length + " teams. Words need " + state.settings.minLength + " letters.");
     scheduleFlip();
+    beginRoundMusic();
   }
 
   function flipCard() {
@@ -639,6 +950,7 @@
     render();
     var winners = winnerTeams();
     announce(winners.length > 1 ? "It's a tie." : winners[0].name + " wins.");
+    playFanfare();
   }
 
   function winnerTeams() {
@@ -742,6 +1054,7 @@
       }
     }
     updateCountdown();
+    syncMusic();
   }
 
   function renderSetup() {
@@ -914,7 +1227,7 @@
         '<header class="topbar">' +
           '<div class="brand"><h1>My Word</h1>' +
             '<p class="rules-pill">Words need ' + s.minLength + " letters · " + modeLabel + "</p></div>" +
-          '<div class="top-actions">' + tools + "</div>" +
+          '<div class="top-actions">' + musicControlsHTML() + tools + "</div>" +
         "</header>" +
         '<div class="scoreboard" role="list" aria-label="Scores">' + scores + "</div>" +
         '<div class="table">' +
@@ -974,7 +1287,7 @@
             "<li>The word has to be long enough.</li>" +
             "<li>Not a real word? Every other team takes one card.</li>" +
           "</ol>" +
-          "<p>Space bar flips the next letter. Undo takes back the last move.</p>" +
+          "<p>Space bar flips the next letter. Undo takes back the last move. Music plays during the round.</p>" +
           '<div class="modal-actions">' +
             '<button type="button" class="start" data-action="close-modal" data-testid="close-how-to">Let\'s play</button>' +
           "</div>" +
@@ -1038,6 +1351,7 @@
           '<p class="winner-sub">' + esc(sub) + "</p>" +
           '<ol class="results">' + rows + "</ol>" +
           '<div class="winner-actions">' +
+            musicControlsHTML() +
             '<button type="button" class="start" data-action="play-again" data-testid="play-again">Play again</button>' +
             '<button type="button" class="tool" data-action="change-setup">Change setup</button>' +
             '<button type="button" class="tool" data-action="undo" data-testid="undo-winner"' +
@@ -1069,6 +1383,17 @@
       state.settings.flipMode = value === "manual" ? "manual" : "auto";
       saveSettings();
       render();
+    } else if (action === "music-toggle") {
+      state.settings.musicOn = !musicWanted();
+      saveSettings();
+      if (state.phase === "winner" && state.settings.musicOn) {
+        fanfareStarted = false;
+        fanfarePending = false;
+      }
+      render();
+      if (state.phase === "play") beginRoundMusic();
+      else if (state.phase === "winner" && state.settings.musicOn) playFanfare();
+      else syncMusic();
     } else if (action === "start") {
       startGame();
     } else if (action === "how-to") {
@@ -1144,6 +1469,11 @@
       var label = document.querySelector("[data-speed-label]");
       if (label) label.textContent = state.settings.flipSeconds + "s";
     }
+    if (target.getAttribute("data-role") === "music-volume") {
+      state.settings.musicVolume = clampVolume(Number(target.value) / 100);
+      saveSettings();
+      applyMusicVolume();
+    }
   }
 
   function onKey(event) {
@@ -1178,7 +1508,26 @@
     }
   }
 
+  function musicControlsHTML() {
+    var on = musicWanted();
+    var vol = Math.round(clampVolume(state.settings.musicVolume) * 100);
+    return (
+      '<div class="music-ctl">' +
+        '<button type="button" class="tool music-btn" data-action="music-toggle" data-testid="music-toggle" aria-pressed="' +
+          (on ? "true" : "false") + '">' + (on ? "Music on" : "Music off") + "</button>" +
+        '<label class="music-vol"><span class="sr-only">Volume</span>' +
+          '<input type="range" min="0" max="100" step="1" value="' + vol +
+          '" data-role="music-volume" data-testid="music-volume" aria-label="Music volume">' +
+        "</label>" +
+      "</div>"
+    );
+  }
+
+  app.addEventListener("pointerdown", function () {
+    wakeAudio();
+  });
   app.addEventListener("click", function (event) {
+    wakeAudio();
     if (event.target.classList && event.target.classList.contains("modal-back")) {
       if (state.howTo) {
         state.howTo = false;
@@ -1219,7 +1568,17 @@
         });
         for (var n = top.length - 1; n >= 0; n--) state.deck.push(top[n]);
       },
-      state: state
+      state: state,
+      audio: function () {
+        return {
+          state: audioCtx ? audioCtx.state : "none",
+          looping: musicLooping,
+          fanfare: fanfareStarted,
+          ducked: !!(musicDuck && musicDuck.gain.value < 0.6),
+          volume: state.settings.musicVolume,
+          on: musicWanted()
+        };
+      }
     };
   }
 

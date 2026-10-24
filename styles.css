@@ -474,6 +474,64 @@ button:disabled {
   color: var(--ink);
 }
 
+.music-ctl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
+  padding: 4px 10px 4px 4px;
+  background: var(--card);
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+}
+
+.music-btn {
+  min-height: 40px;
+  border-width: 0;
+  background: var(--paper);
+}
+
+.music-btn[aria-pressed="true"] {
+  background: var(--gold);
+  color: var(--ink);
+}
+
+.music-vol {
+  display: flex;
+  align-items: center;
+  width: 108px;
+}
+
+.music-vol input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 12px;
+  margin: 0;
+  border-radius: 999px;
+  background: #ddd6c8;
+  border: 2px solid var(--ink);
+}
+
+.music-vol input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 3px solid var(--gold);
+  cursor: pointer;
+}
+
+.music-vol input[type="range"]::-moz-range-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 3px solid var(--gold);
+  cursor: pointer;
+}
+
 .scoreboard {
   display: grid;
   grid-template-columns: repeat(var(--team-n, 4), minmax(0, 1fr));
